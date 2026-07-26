@@ -241,6 +241,7 @@ async function main(): Promise<void> {
       const breakpoints: string[] = [];
       let runtimePath: string | undefined;
       let scriptArgs: string[] | undefined;
+      let language: string | undefined;
       let stopOnEntry = false;
 
       let i = 2;
@@ -250,6 +251,13 @@ async function main(): Promise<void> {
           i += 2;
         } else if ((args[i] === "--runtime" || args[i] === "--python") && i + 1 < args.length) {
           runtimePath = args[i + 1]!;
+          i += 2;
+        } else if (args[i] === "--language" && i + 1 < args.length) {
+          // Explicit adapter selection. Required for compiled targets (Rust,
+          // C/C++), whose built executables have no extension for
+          // getAdapterForFile() to key off. startSession() already honours
+          // cmd.language; it was simply never parsed here for `start`.
+          language = args[i + 1]!;
           i += 2;
         } else if (args[i] === "--stop-on-entry") {
           stopOnEntry = true;
@@ -275,6 +283,7 @@ async function main(): Promise<void> {
       };
       if (runtimePath) cmd.runtime = pathResolve(runtimePath);
       if (scriptArgs) cmd.args = scriptArgs;
+      if (language) cmd.language = language;
       result = await sendCommand(cmd);
       break;
     }

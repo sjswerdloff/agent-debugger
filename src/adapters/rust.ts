@@ -15,11 +15,15 @@ export class RustAdapter implements AdapterConfig {
     if (!codelldbPath) {
       return "CodeLLDB not found. Set CODELLDB_PATH environment variable.";
     }
+    // CodeLLDB's adapter binary has no --version flag (it exits non-zero on
+    // unknown args). Its supported options are --liblldb/--port/--connect/
+    // --auth-token/--multi-session/--settings/--help. Probe with --help, which
+    // exits 0, so a correctly installed adapter is not reported as missing.
     try {
-      await execCheck(codelldbPath, ["--version"]);
+      await execCheck(codelldbPath, ["--help"]);
       return null;
     } catch {
-      return `CodeLLDB not found at ${codelldbPath}`;
+      return `CodeLLDB not found or not executable at ${codelldbPath}`;
     }
   }
 
