@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-and-test:
+    name: Build and unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,3 +19,66 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  e2e:
+    # The unit tests above only exercise the zod schema and initial session
+    # state -- they pass regardless of whether the debugger actually works.
+    # This job runs the real end-to-end suite: it launches adapters, sets
+    # breakpoints, and inspects live variables.
+    name: E2E (Python + Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install debugpy
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --quiet --upgrade pip debugpy
+
+      - name: Install CodeLLDB adapter
+        run: |
+          CODELLDB_VERSION=v1.12.2
+          curl -sSfL -o /tmp/codelldb.vsix \
+            "https://github.com/vadimcn/codelldb/releases/download/${CODELLDB_VERSION}/codelldb-linux-x64.vsix"
+          mkdir -p "$HOME/codelldb"
+          unzip -q /tmp/codelldb.vsix -d "$HOME/codelldb"
+          chmod +x "$HOME/codelldb/extension/adapter/codelldb"
+          "$HOME/codelldb/extension/adapter/codelldb" --help > /dev/null
+          echo "CODELLDB_PATH=$HOME/codelldb/extension/adapter/codelldb" >> "$GITHUB_ENV"
+
+      - name: Allow ptrace (Linux hardening blocks the debugger otherwise)
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Assert both adapters are actually available
+        # e2e.sh SKIPs a language whose adapter is missing. In CI a skip must be
+        # a hard error, otherwise this job goes green having tested nothing.
+        run: |
+          test -x "$CODELLDB_PATH" || { echo "CodeLLDB missing"; exit 1; }
+          ./.venv/bin/python -c "import debugpy" || { echo "debugpy missing"; exit 1; }
+          command -v cargo >/dev/null || { echo "cargo missing"; exit 1; }
+
+      - name: Run E2E suite
+        env:
+          PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: bash test/e2e.sh | tee /tmp/e2e.out
+
+      - name: Verify the Rust section actually ran
+        # Guards against the suite reporting success because Rust was silently
+        # skipped -- the exact green-check-that-lies this job exists to prevent.
+        run: |
+          grep -q "Test 16: Rust (CodeLLDB)" /tmp/e2e.out \
+            || { echo "Rust E2E section did not run"; exit 1; }
+          grep -q "rust: vars works immediately after start" /tmp/e2e.out \
+            || { echo "Rust regression assertions missing"; exit 1; }
