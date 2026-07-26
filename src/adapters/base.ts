@@ -42,6 +42,17 @@ export interface InjectResult {
 export interface AdapterConfig {
   name: string;
 
+  /**
+   * DAP "context" to use for evaluate requests. Defaults to "repl".
+   *
+   * CodeLLDB routes "repl" to the LLDB *command interpreter*, so a bare
+   * expression comes back as `'<expr>' is not a valid command`. It needs
+   * "watch", which forces expression evaluation. debugpy accepts "repl" and
+   * usefully allows statements there, so this stays per-adapter rather than
+   * being changed globally.
+   */
+  evaluateContext?: string;
+
   /** Check if the debug adapter is installed. Returns null if OK, error message if not. */
   checkInstalled(runtimePath?: string): Promise<string | null>;
 

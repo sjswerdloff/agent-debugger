@@ -3,9 +3,43 @@
 # Tests all commands against multiple complex fixtures
 set -uo pipefail
 
-BIN="/Users/joaquincamponario/Documents/Personal/agent-debugger/bin/agent-debugger"
-FIXTURES="/Users/joaquincamponario/Documents/Personal/agent-debugger/test/fixtures"
-PYTHON="/Users/joaquincamponario/Documents/Personal/debugger-tool/.venv/bin/python"
+# Resolve everything relative to this script so the suite runs on any machine.
+# Each is overridable by environment variable for unusual layouts / CI.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+BIN="${AGENT_DEBUGGER_BIN:-$REPO_ROOT/bin/agent-debugger}"
+FIXTURES="${AGENT_DEBUGGER_FIXTURES:-$SCRIPT_DIR/fixtures}"
+
+# Python interpreter used for the Python fixtures. Prefer an explicit override,
+# then a repo-local venv, then whatever is on PATH.
+if [ -n "${PYTHON:-}" ]; then
+    :
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+    PYTHON="$(command -v python3 || true)"
+fi
+
+if [ ! -x "$BIN" ]; then
+    echo "ERROR: agent-debugger binary not found at $BIN" >&2
+    echo "       Run 'npm run build' first, or set AGENT_DEBUGGER_BIN." >&2
+    exit 2
+fi
+
+# Python fixtures need debugpy in the chosen interpreter. Skip rather than fail
+# if it is missing -- an absent adapter is an environment gap, not a defect.
+HAVE_PYTHON=0
+if [ -n "$PYTHON" ] && "$PYTHON" -c "import debugpy" >/dev/null 2>&1; then
+    HAVE_PYTHON=1
+fi
+
+# Rust fixtures need cargo (to build) and CodeLLDB (to debug).
+HAVE_RUST=0
+if command -v cargo >/dev/null 2>&1 \
+   && [ -n "${CODELLDB_PATH:-}" ] && [ -x "${CODELLDB_PATH:-}" ]; then
+    HAVE_RUST=1
+fi
 
 PASS=0
 FAIL=0
@@ -58,6 +92,12 @@ cleanup() {
 # ═══════════════════════════════════════════════════
 echo "═══ Test Suite: agent-debugger E2E ═══"
 echo ""
+if [ "$HAVE_PYTHON" -ne 1 ]; then
+    echo "WARNING: debugpy not importable from '$PYTHON'."
+    echo "         Python tests below will fail. Install with:"
+    echo "           uv venv .venv && uv pip install debugpy --python .venv/bin/python"
+    echo ""
+fi
 
 # ─── Test 1: Help output ───
 echo "─── Test 1: CLI Help ───"
@@ -440,6 +480,73 @@ if [ "$JS_DEBUG_AVAILABLE" -eq 1 ]; then
     run_cmd $BIN close >/dev/null
 else
     echo "─── Test 15: Node.js (js-debug) — SKIPPED (js-debug not found) ───"
+fi
+
+# ═══════════════════════════════════════════════════
+echo ""
+if [ "$HAVE_RUST" -eq 1 ]; then
+    echo "─── Test 16: Rust (CodeLLDB) ───"
+    cleanup
+
+    RUST_FIXTURE="$FIXTURES/rust_bug"
+    ( cd "$RUST_FIXTURE" && cargo build --quiet ) 2>/dev/null
+    RUST_BIN="$RUST_FIXTURE/target/debug/rust_bug"
+
+    if [ ! -x "$RUST_BIN" ]; then
+        echo "  ✗ rust: cargo build produced no binary at $RUST_BIN"
+        FAIL=$((FAIL + 1))
+    else
+        # Compiled targets have no file extension, so --language is REQUIRED;
+        # passing the .rs source would hand CodeLLDB something it cannot launch.
+        OUT=$(run_cmd $BIN start "$RUST_BIN" --language rust \
+            --break "$RUST_FIXTURE/src/main.rs:24")
+        assert_contains "rust: starts and pauses" "paused" "$OUT"
+        assert_contains "rust: breakpoint verified" "verified" "$OUT"
+
+        # Regression: vars/stack must work IMMEDIATELY after start. They broke
+        # when threadId fell back to 1 (correct for debugpy, never for LLDB).
+        OUT=$(run_cmd $BIN vars)
+        assert_contains "rust: vars works immediately after start" "running_total" "$OUT"
+
+        OUT=$(run_cmd $BIN stack)
+        assert_contains "rust: stack works immediately after start" "accumulate" "$OUT"
+
+        # Regression: eval must evaluate an EXPRESSION, not be handed to the
+        # LLDB command interpreter (DAP context "watch", not "repl").
+        OUT=$(run_cmd $BIN eval "running_total")
+        assert_matches "rust: eval evaluates an expression" "[0-9]" "$OUT"
+        if echo "$OUT" | grep -q "not a valid command"; then
+            FAIL=$((FAIL + 1))
+            ERRORS="${ERRORS}\n  FAIL: rust: eval routed to LLDB command interpreter\n"
+            echo "  ✗ rust: eval routed to LLDB command interpreter"
+        fi
+
+        # The fixture's bug: running_total accumulates across patients, so on
+        # the second iteration it exceeds that patient's own dose.
+        OUT=$(run_cmd $BIN continue)
+        assert_contains "rust: continue hits breakpoint again" "paused" "$OUT"
+
+        # The breakpoint sits BEFORE the += , so on the second iteration
+        # running_total still holds patient A's dose (700) while this patient's
+        # own dose is 450 -- the leak, caught at the point of causation.
+        OUT=$(run_cmd $BIN eval "running_total")
+        assert_contains "rust: running_total leaked from previous patient" "700" "$OUT"
+
+        OUT=$(run_cmd $BIN eval "p.dose_mg")
+        assert_contains "rust: this patient's own dose is 450" "450" "$OUT"
+
+        run_cmd $BIN close >/dev/null
+    fi
+else
+    echo "─── Test 16: Rust (CodeLLDB) — SKIPPED ───"
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "    cargo not found"
+    fi
+    if [ -z "${CODELLDB_PATH:-}" ]; then
+        echo "    CODELLDB_PATH not set"
+    elif [ ! -x "${CODELLDB_PATH:-}" ]; then
+        echo "    CODELLDB_PATH not executable: $CODELLDB_PATH"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════

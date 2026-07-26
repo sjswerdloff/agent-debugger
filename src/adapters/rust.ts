@@ -10,16 +10,23 @@ import { getFreePort } from "../util/ports.js";
 export class RustAdapter implements AdapterConfig {
   name = "rust";
 
+  /** CodeLLDB treats "repl" input as LLDB commands; "watch" evaluates expressions. */
+  evaluateContext = "watch";
+
   async checkInstalled(): Promise<string | null> {
     const codelldbPath = process.env.CODELLDB_PATH;
     if (!codelldbPath) {
       return "CodeLLDB not found. Set CODELLDB_PATH environment variable.";
     }
+    // CodeLLDB's adapter binary has no --version flag (it exits non-zero on
+    // unknown args). Its supported options are --liblldb/--port/--connect/
+    // --auth-token/--multi-session/--settings/--help. Probe with --help, which
+    // exits 0, so a correctly installed adapter is not reported as missing.
     try {
-      await execCheck(codelldbPath, ["--version"]);
+      await execCheck(codelldbPath, ["--help"]);
       return null;
     } catch {
-      return `CodeLLDB not found at ${codelldbPath}`;
+      return `CodeLLDB not found or not executable at ${codelldbPath}`;
     }
   }
 
@@ -136,6 +143,11 @@ export class RustAdapter implements AdapterConfig {
       return {
         status: "paused",
         reason: body.reason || "unknown",
+        // Report the stopping thread. waitForEvent() consumed this event, so
+        // the caller cannot recover it by draining, and LLDB uses real system
+        // thread ids -- the caller's "?? 1" fallback is never correct here
+        // (it only works for debugpy, where the main thread happens to be 1).
+        threadId: body.threadId,
         breakpoints: bpResults,
       };
     }
