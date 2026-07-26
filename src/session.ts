@@ -116,11 +116,15 @@ export class Session {
 
     if (result.status === "paused") {
       this.state = "paused";
+      // Prefer the thread the adapter's init flow actually observed. initFlow
+      // awaits the "stopped" event, which consumes it, so drainEvents() below
+      // is usually empty -- and the "?? 1" fallback is only correct for
+      // debugpy (main thread == 1). LLDB reports real system thread ids, so
+      // guessing 1 there yields a nonexistent thread: stackTrace fails and
+      // frameId is never set, breaking `vars` and `stack` until some later
+      // command repopulates threadId from its own stopped event.
       const body = (this.client.drainEvents("stopped")[0]?.body || {}) as { threadId?: number };
-      this.threadId = body.threadId ?? 1;
-      // threadId may already be set from the initFlow stopped event processing
-      // Try to get it from the adapter's result or fallback
-      if (!this.threadId) this.threadId = 1;
+      this.threadId = result.threadId ?? body.threadId ?? 1;
       await this.updateFrame();
       result.location = await this.currentLocation();
     } else if (result.status === "terminated") {
@@ -352,7 +356,10 @@ export class Session {
     if (!this.client) return { error: "No active session" };
     if (!expression) return { error: "No expression provided" };
 
-    const args: Record<string, unknown> = { expression, context: "repl" };
+    const args: Record<string, unknown> = {
+      expression,
+      context: this.adapter?.evaluateContext ?? "repl",
+    };
     if (this.frameId !== null) args.frameId = this.frameId;
 
     const resp = await this.client.request("evaluate", args);

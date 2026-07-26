@@ -96,6 +96,13 @@ export interface CommandResult {
   error?: string;
   status?: string;
   reason?: string;
+  /**
+   * Thread that stopped, as reported by the adapter's init flow. The init flow
+   * consumes the "stopped" event, so the caller cannot recover this by
+   * draining events afterwards. Adapters using real system thread ids (LLDB)
+   * must report it; omitting it leaves the caller guessing.
+   */
+  threadId?: number;
   location?: LocationInfo | null;
   breakpoints?: BreakpointInfo[];
   variables?: VariableInfo[];

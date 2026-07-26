@@ -10,6 +10,9 @@ import { getFreePort } from "../util/ports.js";
 export class RustAdapter implements AdapterConfig {
   name = "rust";
 
+  /** CodeLLDB treats "repl" input as LLDB commands; "watch" evaluates expressions. */
+  evaluateContext = "watch";
+
   async checkInstalled(): Promise<string | null> {
     const codelldbPath = process.env.CODELLDB_PATH;
     if (!codelldbPath) {
@@ -140,6 +143,11 @@ export class RustAdapter implements AdapterConfig {
       return {
         status: "paused",
         reason: body.reason || "unknown",
+        // Report the stopping thread. waitForEvent() consumed this event, so
+        // the caller cannot recover it by draining, and LLDB uses real system
+        // thread ids -- the caller's "?? 1" fallback is never correct here
+        // (it only works for debugpy, where the main thread happens to be 1).
+        threadId: body.threadId,
         breakpoints: bpResults,
       };
     }
